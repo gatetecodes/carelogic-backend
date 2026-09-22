@@ -12,7 +12,8 @@ beforeAll(async () => {
 
 afterEach(() => {
   if (originalFosaSystem === undefined) {
-    process.env.HIE_FACILITY_REGISTRY_FOSA_SYSTEM = undefined;
+    // biome-ignore lint/performance/noDelete: Deletion restores an absent environment variable.
+    delete process.env.HIE_FACILITY_REGISTRY_FOSA_SYSTEM;
   } else {
     process.env.HIE_FACILITY_REGISTRY_FOSA_SYSTEM = originalFosaSystem;
   }

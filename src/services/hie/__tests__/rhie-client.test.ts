@@ -521,8 +521,18 @@ describe("registry service configuration", () => {
   const originalProviderUrl = process.env.HIE_PROVIDER_REGISTRY_BASE_URL;
 
   afterEach(() => {
-    process.env.HIE_FACILITY_REGISTRY_BASE_URL = originalFacilityUrl;
-    process.env.HIE_PROVIDER_REGISTRY_BASE_URL = originalProviderUrl;
+    if (originalFacilityUrl === undefined) {
+      // biome-ignore lint/performance/noDelete: Deletion restores an absent environment variable.
+      delete process.env.HIE_FACILITY_REGISTRY_BASE_URL;
+    } else {
+      process.env.HIE_FACILITY_REGISTRY_BASE_URL = originalFacilityUrl;
+    }
+    if (originalProviderUrl === undefined) {
+      // biome-ignore lint/performance/noDelete: Deletion restores an absent environment variable.
+      delete process.env.HIE_PROVIDER_REGISTRY_BASE_URL;
+    } else {
+      process.env.HIE_PROVIDER_REGISTRY_BASE_URL = originalProviderUrl;
+    }
   });
 
   it("reports an unset registry as unconfigured without throwing", () => {

@@ -18,7 +18,10 @@ import {
   fhirProcedureSchema,
   fhirServiceRequestSchema,
 } from "./fhir.schemas";
-import { practitionerLicenseStatusSchema } from "./registry.schemas";
+import {
+  PRACTITIONER_LICENSE_NUMBER_SEGMENT,
+  practitionerLicenseStatusSchema,
+} from "./registry.schemas";
 
 export type RhieService =
   | "CLIENT_REGISTRY"
@@ -548,7 +551,9 @@ const ENDPOINTS: readonly EndpointDescriptor[] = [
     // entry.
     service: "PROVIDER_REGISTRY",
     method: "GET",
-    path: /^Practitioner\/[A-Za-z0-9.-]+\/status$/,
+    path: new RegExp(
+      `^Practitioner/${PRACTITIONER_LICENSE_NUMBER_SEGMENT}/status$`
+    ),
     responseSchema: practitionerLicenseStatusSchema,
     mediaType: "json",
   },
