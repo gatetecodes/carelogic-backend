@@ -1,6 +1,10 @@
 import { z } from "zod";
+import { practitionerLicenseNumberSchema } from "@/services/hie/registry.schemas";
 
 const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const optionalLicenseNumberSchema = z
+  .union([z.literal(""), practitionerLicenseNumberSchema])
+  .optional();
 
 const staffRoles = [
   "RECEPTIONIST",
@@ -80,7 +84,7 @@ export const createUserSchema = z
     phone_number: z.string().min(10),
     highestEducation: z.enum(["A0", "A1", "A2"]).optional(),
     // Doctor-specific optional fields
-    licenseNumber: z.string().optional(),
+    licenseNumber: optionalLicenseNumberSchema,
     licenseExpiration: z.string().optional(),
     license_document: z.string().optional(),
     diploma_document: z.string().optional(),
@@ -110,7 +114,7 @@ export const createDoctorSchema = z
     departments: z.array(z.coerce.number()).nonempty(),
     highestEducation: z.enum(["A0", "A1", "A2"]).optional(),
     consultationFee: z.coerce.number().optional(),
-    licenseNumber: z.string().optional(),
+    licenseNumber: optionalLicenseNumberSchema,
     licenseExpiration: z.string().optional(),
     license_document: z.string().optional(),
     diploma_document: z.string().optional(),

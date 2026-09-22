@@ -85,22 +85,6 @@ All routes are under `/api/v1/hie` and are tenant scoped.
   a mapping that was already usable (`VERIFIED` or `MANUAL_ATTESTED`) records the
   failed check without being downgraded, because `CONFLICT` blocks publication.
 
-### Assurance levels
-
-`VERIFIED` means the backend matched the mapping against the national registry
-snapshot for the clinic's own environment; it expires after
-`HIE_REGISTRY_VERIFICATION_TTL_DAYS` (90 by default) because registry facts drift.
-`MANUAL_ATTESTED` means a clinic administrator recorded their own evidence. Both
-satisfy every gate — publication, UPID resolution and transfers — so a clinic in a
-district whose registry is unreachable is never locked out. Requiring `VERIFIED`
-alone previously made UPID resolution and transfer creation unreachable, since no
-endpoint could write that status.
-
-The Provider Registry ships with `HIE_PROVIDER_REGISTRY_BASE_URL` unset: the MoH
-collection publishes it only on a direct host behind an `x-auth-token` JWT, and
-this client speaks HTTP basic auth through openHIM. Practitioner verification
-therefore returns 503 `HIE_PROVIDER_REGISTRY_NOT_CONFIGURED` until MoH confirms a
-gateway route; manual attestation is unaffected.
 - `POST /patients/lookup`: NID and birth-date Client Registry lookup.
 - `POST /patients/request-upid`: NIDA-backed UPID resolution for a patient the
   Client Registry has no `Patient` for. Attributed to the branch's verified FOSA
@@ -132,6 +116,23 @@ gateway route; manual attestation is unaffected.
   ambulance call and departure times, receiving clinician contact, and caregiver
   details, published as the MoH transfer Encounter extensions. All are optional
   so an emergency transfer is never blocked on paperwork.
+
+### Assurance levels
+
+`VERIFIED` means the backend matched the mapping against the national registry
+snapshot for the clinic's own environment; it expires after
+`HIE_REGISTRY_VERIFICATION_TTL_DAYS` (90 by default) because registry facts drift.
+`MANUAL_ATTESTED` means a clinic administrator recorded their own evidence. Both
+satisfy every gate — publication, UPID resolution and transfers — so a clinic in a
+district whose registry is unreachable is never locked out. Requiring `VERIFIED`
+alone previously made UPID resolution and transfer creation unreachable, since no
+endpoint could write that status.
+
+The Provider Registry ships with `HIE_PROVIDER_REGISTRY_BASE_URL` unset: the MoH
+collection publishes it only on a direct host behind an `x-auth-token` JWT, and
+this client speaks HTTP basic auth through openHIM. Practitioner verification
+therefore returns 503 `HIE_PROVIDER_REGISTRY_NOT_CONFIGURED` until MoH confirms a
+gateway route; manual attestation is unaffected.
 
 The worker processes the durable outbox every minute. Retry delays are one
 minute, five minutes, thirty minutes, two hours, twelve hours, and then daily.

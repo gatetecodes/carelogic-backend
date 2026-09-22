@@ -20,6 +20,7 @@ import {
   providerRegistryMode,
   verifyPractitionerLicense,
 } from "@/services/hie/provider-registry.service";
+import { practitionerLicenseNumberSchema } from "@/services/hie/registry.schemas";
 import type { HieEnvironment } from "../../../../generated/prisma/client";
 import {
   audit,
@@ -475,8 +476,11 @@ export async function verifyPractitionerLink(
   }
 
   const environment = await tenantEnvironment(clinicId);
+  const licenseNumber = practitionerLicenseNumberSchema.parse(
+    user.licenseNumber
+  );
   const outcome = await verifyPractitionerLicense({
-    licenseNumber: user.licenseNumber,
+    licenseNumber,
     environment,
   });
   if (outcome.status === "UNAVAILABLE") {
@@ -518,25 +522,25 @@ export async function verifyPractitionerLink(
   }
 
   const identifierHash = hashHieIdentifier(outcome.practitionerId);
-  const conflicting = await db.userExternalIdentity.findUnique({
-    where: {
-      identifierType_identifierHash: {
-        identifierType: "PRACTITIONER",
-        identifierHash,
-      },
-    },
-    select: { userId: true },
-  });
-  if (conflicting && conflicting.userId !== user.id) {
-    throw new AppError({
-      status: 409,
-      code: "HIE_PRACTITIONER_ALREADY_LINKED",
-      message: "This national practitioner is already linked to another user",
-      exposeMessage: true,
-    });
-  }
-
   const identity = await db.$transaction(async (tx) => {
+    const conflicting = await tx.userExternalIdentity.findUnique({
+      where: {
+        identifierType_identifierHash: {
+          identifierType: "PRACTITIONER",
+          identifierHash,
+        },
+      },
+      select: { userId: true },
+    });
+    if (conflicting && conflicting.userId !== user.id) {
+      throw new AppError({
+        status: 409,
+        code: "HIE_PRACTITIONER_ALREADY_LINKED",
+        message: "This national practitioner is already linked to another user",
+        exposeMessage: true,
+      });
+    }
+
     const upserted = await tx.userExternalIdentity.upsert({
       where: {
         identifierType_identifierHash: {
@@ -558,7 +562,6 @@ export async function verifyPractitionerLink(
         verificationExpiresAt: registryVerificationExpiry(now),
       },
       update: {
-        userId: user.id,
         identifierEncrypted: encryptHieValue(outcome.practitionerId),
         verificationStatus: "VERIFIED",
         verificationSource: PROVIDER_SOURCE,

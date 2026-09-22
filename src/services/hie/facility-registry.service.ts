@@ -22,6 +22,7 @@ const SYNC_MAX_ATTEMPTS = 2;
 const UPSERT_CHUNK_SIZE = 200;
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
+const SYNC_TRANSACTION_TIMEOUT_MS = 5 * MINUTE_MS;
 
 /**
  * A FOSA code as observed in the collection: `0022`, `2601`, `0424`. Used only
@@ -578,8 +579,9 @@ const inFlight = new Map<string, Promise<FacilitySyncResult>>();
  * Fetches every page *before* writing anything, then swaps the directory in one
  * transaction. A gateway failure mid-sweep therefore leaves the existing
  * directory byte-identical, so the picker and verification keep working.
- * Facilities absent from a completed sweep are deactivated, never deleted — a
- * mapping verified against a row the registry later dropped must stay auditable.
+ * Facilities absent from a completed sweep are deactivated. A stale row whose
+ * FOSA code now belongs to a different registry resource is replaced so the
+ * directory's environment/FOSA uniqueness constraint remains valid.
  */
 export function syncFacilityDirectory(params: {
   environment: HieEnvironment;
@@ -658,12 +660,27 @@ async function performSync(params: {
     }
     const syncedAt = new Date();
 
-    await db.$transaction(async (tx) => {
-      for (let index = 0; index < unique.length; index += UPSERT_CHUNK_SIZE) {
-        const chunk = unique.slice(index, index + UPSERT_CHUNK_SIZE);
-        await Promise.all(
-          chunk.map((facility) =>
-            tx.hieFacilityDirectory.upsert({
+    await db.$transaction(
+      async (tx) => {
+        for (let index = 0; index < unique.length; index += UPSERT_CHUNK_SIZE) {
+          const chunk = unique.slice(index, index + UPSERT_CHUNK_SIZE);
+          await tx.hieFacilityDirectory.deleteMany({
+            where: {
+              environment,
+              OR: chunk.map((facility) => ({
+                fosaCode: facility.fosaCode,
+                OR: [
+                  { resourceType: { not: facility.resourceType } },
+                  { resourceId: { not: facility.resourceId } },
+                ],
+              })),
+            },
+          });
+        }
+        for (let index = 0; index < unique.length; index += UPSERT_CHUNK_SIZE) {
+          const chunk = unique.slice(index, index + UPSERT_CHUNK_SIZE);
+          for (const facility of chunk) {
+            await tx.hieFacilityDirectory.upsert({
               where: {
                 environment_resourceType_resourceId: {
                   environment,
@@ -682,19 +699,20 @@ async function performSync(params: {
                 active: true,
                 ...facility,
               },
-            })
-          )
-        );
-      }
-      await tx.hieFacilityDirectory.updateMany({
-        where: {
-          environment,
-          active: true,
-          registrySyncedAt: { lt: syncedAt },
-        },
-        data: { active: false },
-      });
-    });
+            });
+          }
+        }
+        await tx.hieFacilityDirectory.updateMany({
+          where: {
+            environment,
+            active: true,
+            registrySyncedAt: { lt: syncedAt },
+          },
+          data: { active: false },
+        });
+      },
+      { timeout: SYNC_TRANSACTION_TIMEOUT_MS }
+    );
 
     // Kept as one stored number for the schema, but logged apart: the live
     // registry publishes ~3,200 entries under ~1,800 distinct FOSA codes, so

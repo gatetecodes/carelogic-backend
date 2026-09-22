@@ -131,6 +131,14 @@ export const registryPractitionerSchema = fhirResourceSchema(
 
 export type RegistryPractitioner = z.infer<typeof registryPractitionerSchema>;
 
+export const PRACTITIONER_LICENSE_NUMBER_SEGMENT = "[A-Za-z0-9.-]+";
+export const practitionerLicenseNumberSchema = z
+  .string()
+  .regex(
+    new RegExp(`^${PRACTITIONER_LICENSE_NUMBER_SEGMENT}$`),
+    "License number may only contain letters, numbers, periods, and hyphens"
+  );
+
 /**
  * Response of `Practitioner/{license}/status`.
  *
