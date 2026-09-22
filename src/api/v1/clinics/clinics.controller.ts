@@ -8,12 +8,12 @@ import {
   UserStatus,
 } from "../../../../generated/prisma/client";
 import { db } from "../../../database/db";
-import { hashCredentialPassword } from "../../../helpers/auth-helper";
 import { buildQueryOptions } from "../../../helpers/query-helper";
-import { defaultFlowConfigRows } from "../../../lib/clinic-flow";
 import { searchParamsSchema } from "../../../lib/common-validation";
 import { httpCodes } from "../../../lib/constants";
 import { logger } from "../../../lib/logger";
+import { writeAudit } from "../../../services/audit.service";
+import { provisionClinic } from "../../../services/clinic-provisioning.service";
 import { invalidateEntitlements } from "../../../services/entitlements.service";
 import { createVerificationEmail } from "../users/users.controller";
 import { clinicSchema } from "./clinics.validation";
@@ -30,17 +30,20 @@ export const getClinics = async (c: Context) => {
     const params = searchParamsSchema.parse(c.req.query());
     const queryOptions = buildQueryOptions<Clinic>(params);
     const { where, orderBy, ...restOptions } = queryOptions;
+    // Archived clinics are soft-deleted: excluded from the operator listing
+    // unless explicitly requested via ?includeArchived=true.
+    const includeArchived = c.req.query("includeArchived") === "true";
+    const scopedWhere = {
+      ...where,
+      ...(includeArchived ? {} : { archivedAt: null }),
+    } as Prisma.ClinicWhereInput;
     const clinics = await db.clinic.findMany({
-      where: {
-        ...where,
-      } as Prisma.ClinicWhereInput,
+      where: scopedWhere,
       orderBy: orderBy as Prisma.ClinicOrderByWithRelationInput,
       ...restOptions,
     });
     const totalCount = await db.clinic.count({
-      where: {
-        ...where,
-      } as Prisma.ClinicWhereInput,
+      where: scopedWhere,
     });
     const pageCount = restOptions.take
       ? Math.ceil(totalCount / restOptions.take)
@@ -79,57 +82,14 @@ export const createClinic = async (c: Context) => {
         httpCodes.FORBIDDEN as ContentfulStatusCode
       );
     }
-    const clinic = await db.$transaction(async (tx) => {
-      const { admin, operatingCountry, ...clinicData } = validatedFields.data;
-      const newClinic = await tx.clinic.create({
-        data: {
-          ...clinicData,
-          operatingCountry: operatingCountry.toUpperCase(),
-        },
-      });
-      const branch = await tx.branch.create({
-        data: {
-          name: "Main Branch",
-          code: "MAIN",
-          clinicId: newClinic.id,
-          isHeadOffice: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
-
-      // Seed the default care-flow config (all stages enabled, canonical order)
-      // so the clinic starts with the standard pipeline and the admin can toggle
-      // optional stages from day one.
-      await tx.clinicFlowConfig.createMany({
-        data: defaultFlowConfigRows(newClinic.id),
-      });
-      const adminUser = await tx.user.create({
-        data: {
-          name: admin.name,
-          email: admin.email,
-          phone_number: admin.phone_number,
-          branchId: branch.id,
-          clinicId: newClinic.id,
-          role: Role.CLINIC_ADMIN,
-          status: UserStatus.ACTIVE,
-          emailVerified: null, // Explicitly set to avoid coercion issues
-        },
-      });
-
-      // Create better-auth credential account for the admin user
-      const credentialHash = hashCredentialPassword(
-        process.env.DEFAULT_USER_PASSWORD as string
-      );
-      await tx.account.create({
-        data: {
-          providerId: "credential",
-          accountId: adminUser.id.toString(),
-          userId: adminUser.id,
-          password: credentialHash,
-        },
-      });
-      return { newClinic, branch, adminUser };
+    const { admin, expiryDate, logo, defaultCurrency, ...clinicData } =
+      validatedFields.data;
+    const clinic = await provisionClinic({
+      ...clinicData,
+      admin,
+      logo,
+      defaultCurrency,
+      subscriptionExpiryDate: expiryDate,
     });
 
     // Send verification email to the clinic admin so they can activate their account
@@ -142,6 +102,12 @@ export const createClinic = async (c: Context) => {
         error: emailResult.error,
       });
     }
+
+    await writeAudit(c, "clinic.created", {
+      targetType: "clinic",
+      targetId: clinic.newClinic.id,
+      metadata: { name: clinic.newClinic.name },
+    });
 
     const responseBody: {
       success: string;
@@ -169,8 +135,19 @@ export const createClinic = async (c: Context) => {
 export const getClinicById = async (c: Context) => {
   try {
     const { id } = c.req.param();
+    const clinicId = Number.parseInt(id, 10);
+    // This response embeds branches + all users of the clinic. Restrict it to
+    // the SaaS operator or a member of that same clinic — previously it had no
+    // role check, so any authenticated user could read any tenant's roster.
+    const user = c.get("user");
+    if (user.role !== Role.SUPER_ADMIN && user.clinicId !== clinicId) {
+      return c.json(
+        { error: "Forbidden" },
+        httpCodes.FORBIDDEN as ContentfulStatusCode
+      );
+    }
     const clinic = await db.clinic.findUnique({
-      where: { id: Number.parseInt(id, 10) },
+      where: { id: clinicId },
       include: {
         branches: true,
         users: true,
@@ -226,6 +203,11 @@ export const updateClinic = async (c: Context) => {
     ) {
       await invalidateEntitlements(clinicId);
     }
+    await writeAudit(c, "clinic.updated", {
+      targetType: "clinic",
+      targetId: clinicId,
+      metadata: { fields: Object.keys(normalizedData) },
+    });
     return c.json(
       {
         success: "Clinic updated successfully",
@@ -332,6 +314,11 @@ export const updateClinicSubscriptionStatus = async (c: Context) => {
     if ("subscriptionStatus" in data) {
       await invalidateEntitlements(clinicId);
     }
+    await writeAudit(c, "clinic.subscriptionChanged", {
+      targetType: "clinic",
+      targetId: clinicId,
+      metadata: { fields: Object.keys(data) },
+    });
     return c.json(
       {
         success: "Clinic subscription status updated successfully",

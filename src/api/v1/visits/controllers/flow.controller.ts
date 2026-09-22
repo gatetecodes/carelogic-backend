@@ -17,6 +17,7 @@ import {
   getOrCreatePatient,
   handleInsurance,
 } from "../../../../helpers/visit-helper";
+import { jsonError, jsonSuccess } from "../../../../lib/api-response";
 import { invalidateVisitRelatedCaches } from "../../../../lib/cache-utils";
 import {
   CARE_STAGE_ORDER,
@@ -73,10 +74,12 @@ type FlowVisitRow = {
   doctorId: number | null;
   paymentMode: PaymentMode | null;
   patient: {
+    id: number;
     firstName: string | null;
     lastName: string | null;
     phoneNumber: string | null;
     dateOfBirth: Date | null;
+    updatedAt: Date;
   } | null;
   patientInsurance: {
     coveragePercentage: Prisma.Decimal | null;
@@ -87,6 +90,8 @@ type FlowVisitRow = {
 
 const toFlowVisit = (v: FlowVisitRow) => ({
   id: v.id,
+  patientId: v.patient?.id ?? null,
+  patientUpdatedAt: v.patient?.updatedAt ?? null,
   patientName:
     `${v.patient?.firstName ?? ""} ${v.patient?.lastName ?? ""}`.trim(),
   initials: initialsOf(v.patient?.firstName, v.patient?.lastName),
@@ -119,10 +124,12 @@ const flowVisitSelect = {
   paymentMode: true,
   patient: {
     select: {
+      id: true,
       firstName: true,
       lastName: true,
       phoneNumber: true,
       dateOfBirth: true,
+      updatedAt: true,
     },
   },
   patientInsurance: {
@@ -215,16 +222,19 @@ export const getPipeline = async (c: Context) => {
       return { stage, count: list.length, visits: list };
     });
 
-    return c.json({
-      stages,
-      total: visits.length,
-      updatedAt: new Date().toISOString(),
+    return jsonSuccess(c, {
+      data: {
+        stages,
+        total: visits.length,
+        updatedAt: new Date().toISOString(),
+      },
     });
   } catch (_error) {
-    return c.json(
-      { error: t("flow.pipelineLoadFailed") },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
-    );
+    return jsonError(c, {
+      status: httpCodes.INTERNAL_SERVER_ERROR,
+      code: "PIPELINE_LOAD_FAILED",
+      message: t("flow.pipelineLoadFailed"),
+    });
   }
 };
 
@@ -273,7 +283,7 @@ export const getStageSummary = async (c: Context) => {
       stage: visit.careStage,
       allowedStages: flow.transitions[visit.careStage] ?? [],
     });
-  } catch (_error) {
+  } catch {
     return c.json(
       { error: t("flow.stageSummaryLoadFailed") },
       httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode

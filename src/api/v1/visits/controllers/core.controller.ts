@@ -66,6 +66,7 @@ import {
 } from "../../../../lib/cache-utils";
 import { searchParamsSchema } from "../../../../lib/common-validation";
 import { getScope } from "../../../../lib/request-scope";
+import { enqueueFinalizedVisitInTransaction } from "../../../../services/hie/outbox.service";
 import { QueueIntegrationService } from "../../../../services/queue-integration.service";
 import {
   DEFAULT_CACHE_TTL,
@@ -1272,6 +1273,7 @@ export const getVisitById = async (c: Context) => {
               select: {
                 id: true,
                 icd11Code: true,
+                snomedCode: true,
                 description: true,
                 isPrimary: true,
               },
@@ -1638,6 +1640,7 @@ const syncVisitDiagnoses = async (
   diagnoses: Array<{
     description: string;
     icd11Code?: string;
+    snomedCode?: string;
     isPrimary?: boolean;
   }>
 ): Promise<string | undefined> => {
@@ -1645,6 +1648,7 @@ const syncVisitDiagnoses = async (
     .map((d) => ({
       description: d.description.trim(),
       icd11Code: d.icd11Code?.trim() || null,
+      snomedCode: d.snomedCode?.trim() || null,
       isPrimary: Boolean(d.isPrimary),
     }))
     .filter((d) => d.description.length > 0);
@@ -1663,6 +1667,7 @@ const syncVisitDiagnoses = async (
       visitId,
       description: d.description,
       icd11Code: d.icd11Code,
+      snomedCode: d.snomedCode,
       isPrimary: i === primaryIndex,
     })),
   });
@@ -1963,6 +1968,12 @@ export const finalizeVisit = async (c: Context) => {
       // cashier's invoice (paid before pharmacy dispensing). No-op when there
       // are no internal lines with a price and quantity.
       await createMedicationPaymentForVisit(visitId, { tx });
+
+      await enqueueFinalizedVisitInTransaction(tx, {
+        clinicId: visit.clinicId,
+        visitId,
+        patientId: visit.patientId,
+      });
 
       return finalizedVisit;
     });

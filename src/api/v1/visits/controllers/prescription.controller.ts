@@ -11,6 +11,7 @@ import {
 import { db } from "../../../../database/db";
 import { logActivity } from "../../../../helpers/activity-helpers";
 import { httpCodes } from "../../../../lib/constants";
+import { enqueueCurrentClinicalEventsInTransaction } from "../../../../services/hie/outbox.service";
 import type {
   CreatePrescription,
   UpdatePrescription,
@@ -52,6 +53,7 @@ export const createPrescription = async (c: Context) => {
     const visit = await db.visit.findUnique({
       where: {
         id: visitIdNum,
+        clinicId: user.clinicId,
       },
       select: {
         id: true,
@@ -131,6 +133,19 @@ export const createPrescription = async (c: Context) => {
                   dosage: item.dosage,
                   frequency: item.frequency,
                   duration: item.duration,
+                  doseValue: item.doseValue,
+                  doseUnit: item.doseUnit,
+                  frequencyCount: item.frequencyCount,
+                  frequencyPeriod: item.frequencyPeriod,
+                  frequencyPeriodUnit: item.frequencyPeriodUnit,
+                  routeSystem: item.routeSystem,
+                  routeCode: item.routeCode,
+                  routeDisplay: item.routeDisplay,
+                  methodSystem: item.methodSystem,
+                  methodCode: item.methodCode,
+                  methodDisplay: item.methodDisplay,
+                  durationValue: item.durationValue,
+                  durationUnit: item.durationUnit,
                   instructions: item.instructions,
                   fulfilment: item.fulfilment,
                   quantity:
@@ -190,6 +205,12 @@ export const createPrescription = async (c: Context) => {
           throw new Error("Failed to create follow-up appointment!");
         }
       }
+
+      await enqueueCurrentClinicalEventsInTransaction(tx, {
+        clinicId: user.clinicId,
+        visitId: visit.id,
+        patientId: visit.patient.id,
+      });
 
       return { newPrescription, appointment };
     });
@@ -281,6 +302,19 @@ export const updatePrescription = async (c: Context) => {
             dosage: item.dosage,
             frequency: item.frequency,
             duration: item.duration,
+            doseValue: item.doseValue,
+            doseUnit: item.doseUnit,
+            frequencyCount: item.frequencyCount,
+            frequencyPeriod: item.frequencyPeriod,
+            frequencyPeriodUnit: item.frequencyPeriodUnit,
+            routeSystem: item.routeSystem,
+            routeCode: item.routeCode,
+            routeDisplay: item.routeDisplay,
+            methodSystem: item.methodSystem,
+            methodCode: item.methodCode,
+            methodDisplay: item.methodDisplay,
+            durationValue: item.durationValue,
+            durationUnit: item.durationUnit,
             instructions: item.instructions,
             fulfilment: item.fulfilment,
             quantity:
@@ -356,6 +390,7 @@ export const createSpectaclePrescription = async (c: Context) => {
     const visit = await db.visit.findUnique({
       where: {
         id: visitIdNum,
+        clinicId: user.clinicId,
       },
       select: {
         id: true,

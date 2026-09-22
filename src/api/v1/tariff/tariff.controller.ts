@@ -1,6 +1,5 @@
 import { parse } from "csv-parse/sync";
 import type { Context } from "hono";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   PriceType,
   type Prisma,
@@ -20,6 +19,8 @@ import {
   type IExistingProduct,
   type ProductCSVRow,
 } from "../../../helpers/tariff-helpers";
+import { jsonSuccess } from "../../../lib/api-response";
+import { AppError } from "../../../lib/app-error";
 import { searchParamsSchema } from "../../../lib/common-validation";
 import {
   httpCodes,
@@ -28,6 +29,7 @@ import {
 } from "../../../lib/constants";
 import { logger } from "../../../lib/logger";
 import { getScope } from "../../../lib/request-scope";
+import type { AppEnv } from "../../../middlewares/auth.middleware";
 import type {
   CreateProductData,
   ImportProductsData,
@@ -38,6 +40,36 @@ import type {
 // Small helpers to keep handlers simple (reduce complexity)
 function userHasTariffWriteAccess(user: { role: Role }) {
   return user.role === Role.CLINIC_ADMIN || user.role === Role.SUPER_ADMIN;
+}
+
+const TERMINOLOGY_FIELDS = [
+  "icd11Code",
+  "loincCode",
+  "snomedCode",
+  "rxNormCode",
+  "ichiCode",
+  "nationalTariffCode",
+] as const;
+
+function containsLegacyTerminologyFields(data: object): boolean {
+  return TERMINOLOGY_FIELDS.some(
+    (field) => field in data && data[field as keyof typeof data] !== undefined
+  );
+}
+
+const terminologyWarningMeta = (ignored: boolean) =>
+  ignored
+    ? {
+        warnings: [
+          {
+            code: "TERMINOLOGY_MANAGED_BY_PLATFORM",
+          },
+        ],
+      }
+    : undefined;
+
+function tariffError(status: number, code: string, message: string): never {
+  throw new AppError({ status, code, message, exposeMessage: true });
 }
 
 async function departmentsExistByIds(departmentIds: number[]) {
@@ -162,14 +194,11 @@ async function createInitialInsurancePricesForNewProduct(
   }
 }
 
-export const getTariff = async (c: Context) => {
+export const getTariff = async (c: Context<AppEnv>): Promise<Response> => {
   try {
     const user = c.get("user");
     if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
+      tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
     }
 
     const params = searchParamsSchema.parse(c.req.query());
@@ -179,10 +208,7 @@ export const getTariff = async (c: Context) => {
     const { where, orderBy, ...restOptions } = queryOptions;
 
     if (!targetClinicId) {
-      return c.json(
-        { error: "Clinic not found" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
+      tariffError(httpCodes.FORBIDDEN, "CLINIC_NOT_FOUND", "Clinic not found");
     }
 
     const clinicFilter = targetClinicId
@@ -221,6 +247,9 @@ export const getTariff = async (c: Context) => {
         normalRange: true,
         icd11Code: true,
         loincCode: true,
+        snomedCode: true,
+        rxNormCode: true,
+        ichiCode: true,
         nationalTariffCode: true,
         isActive: true,
         departments: {
@@ -284,29 +313,31 @@ export const getTariff = async (c: Context) => {
       };
     });
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: "Tariff fetched successfully",
       data: productsWithPricing,
-      totalCount,
-      pageCount,
+      meta: { totalCount, pageCount },
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
 
-export const getProductsList = async (c: Context) => {
+export const getProductsList = async (
+  c: Context<AppEnv>
+): Promise<Response> => {
   try {
     const user = c.get("user");
     if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
+      tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
     }
 
     const { departmentIds } = c.req.query();
@@ -359,6 +390,9 @@ export const getProductsList = async (c: Context) => {
         basePrice: true,
         icd11Code: true,
         loincCode: true,
+        snomedCode: true,
+        rxNormCode: true,
+        ichiCode: true,
         nationalTariffCode: true,
         departments: {
           select: {
@@ -369,20 +403,26 @@ export const getProductsList = async (c: Context) => {
       },
     });
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: "Products list fetched successfully",
       data: products,
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
 
-export const getProductsListWithPricing = async (c: Context) => {
+export const getProductsListWithPricing = async (
+  c: Context<AppEnv>
+): Promise<Response> => {
   try {
     const user = c.get("user");
 
@@ -438,6 +478,9 @@ export const getProductsListWithPricing = async (c: Context) => {
         restOfWorldPrice: true,
         icd11Code: true,
         loincCode: true,
+        snomedCode: true,
+        rxNormCode: true,
+        ichiCode: true,
         nationalTariffCode: true,
         clinicProductPrices: scopedClinicId
           ? {
@@ -517,27 +560,28 @@ export const getProductsListWithPricing = async (c: Context) => {
       };
     });
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: "Products list with pricing fetched successfully",
       data: productsWithPricing,
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
 
-export const getProductById = async (c: Context) => {
+export const getProductById = async (c: Context<AppEnv>): Promise<Response> => {
   try {
     const user = c.get("user");
-    if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
+    if (!userHasTariffWriteAccess(user)) {
+      tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
     }
 
     const { id } = c.get("validatedParam");
@@ -560,6 +604,9 @@ export const getProductById = async (c: Context) => {
         normalRange: true,
         icd11Code: true,
         loincCode: true,
+        snomedCode: true,
+        rxNormCode: true,
+        ichiCode: true,
         nationalTariffCode: true,
         consumables: true,
         isActive: true,
@@ -616,21 +663,16 @@ export const getProductById = async (c: Context) => {
     });
 
     if (!product) {
-      return c.json(
-        { error: "Product not found" },
-        httpCodes.NOT_FOUND as ContentfulStatusCode
+      tariffError(
+        httpCodes.NOT_FOUND,
+        "PRODUCT_NOT_FOUND",
+        "Product not found"
       );
     }
 
     // Check if user has access to this product
-    if (
-      user.role !== Role.SUPER_ADMIN &&
-      !product.clinics.some((clinic) => clinic.id === user.clinic.id)
-    ) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
+    if (!userCanAccessProduct(user, product)) {
+      tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
     }
 
     // Transform product to include clinic-specific prices with fallback
@@ -664,513 +706,469 @@ export const getProductById = async (c: Context) => {
       clinicProductPrices: undefined, // Remove from response
     };
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: "Product fetched successfully",
       data: transformedProduct,
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Sequential validation guards before product creation
-export const createProduct = async (c: Context) => {
-  try {
-    const user = c.get("user");
-    if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
+export const createProduct = async (c: Context<AppEnv>): Promise<Response> => {
+  const user = c.get("user");
+  if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
+    tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
+  }
+
+  const { clinicId } = getScope(user, c.req.query());
+  if (!clinicId) {
+    tariffError(
+      httpCodes.BAD_REQUEST,
+      "CLINIC_SCOPE_REQUIRED",
+      "Clinic scope is required to create a product"
+    );
+  }
+
+  const validatedData = c.get("validatedJson") as CreateProductData | undefined;
+  if (!validatedData) {
+    tariffError(
+      httpCodes.BAD_REQUEST,
+      "INVALID_REQUEST_BODY",
+      "Invalid request body"
+    );
+  }
+
+  const {
+    name,
+    code,
+    description,
+    category,
+    basePrice,
+    eastAfricaPrice,
+    africaPrice,
+    restOfWorldPrice,
+    unit,
+    normalRange,
+    consumables,
+    departmentIds,
+  } = validatedData;
+
+  // Check if product code already exists
+  const existingProduct = await db.product.findUnique({
+    where: { code },
+  });
+
+  if (existingProduct) {
+    tariffError(
+      httpCodes.CONFLICT,
+      "PRODUCT_CODE_EXISTS",
+      "Product with this code already exists"
+    );
+  }
+
+  // Verify departments exist if provided (Department is global in backend schema)
+  if (departmentIds && departmentIds.length > 0) {
+    const departments = await db.department.findMany({
+      where: { id: { in: departmentIds } },
+    });
+    if (departments.length !== departmentIds.length) {
+      tariffError(
+        httpCodes.NOT_FOUND,
+        "DEPARTMENT_NOT_FOUND",
+        "One or more departments not found"
       );
     }
+  }
 
-    const validatedData = c.get("validatedJson") as
-      | CreateProductData
-      | undefined;
-    if (!validatedData) {
-      return c.json(
-        { error: "Invalid request body" },
-        httpCodes.BAD_REQUEST as ContentfulStatusCode
-      );
-    }
-
-    const {
+  const product = await db.product.create({
+    data: {
       name,
       code,
       description,
-      category,
-      basePrice,
-      eastAfricaPrice,
-      africaPrice,
-      restOfWorldPrice,
+      category: category as ProductCategory,
+      basePrice: basePrice ?? null,
+      eastAfricaPrice: eastAfricaPrice ?? null,
+      africaPrice: africaPrice ?? null,
+      restOfWorldPrice: restOfWorldPrice ?? null,
       unit,
       normalRange,
-      icd11Code,
-      loincCode,
-      nationalTariffCode,
-      consumables,
-      departmentIds,
-    } = validatedData;
+      consumables: consumables
+        ? (consumables as Prisma.InputJsonValue)
+        : undefined,
+      clinics: {
+        connect: { id: clinicId },
+      },
+      departments: departmentIds
+        ? {
+            connect: departmentIds.map((id) => ({ id })),
+          }
+        : undefined,
+    },
+    include: {
+      departments: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+      clinics: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+  });
 
-    // Check if product code already exists
-    const existingProduct = await db.product.findUnique({
-      where: { code },
-    });
+  return jsonSuccess(c, {
+    status: httpCodes.CREATED,
+    message: "Product created successfully",
+    data: product,
+  });
+};
 
-    if (existingProduct) {
-      return c.json(
-        { error: "Product with this code already exists" },
-        httpCodes.CONFLICT as ContentfulStatusCode
+export const updateProduct = async (c: Context<AppEnv>): Promise<Response> => {
+  const user = c.get("user");
+  if (!userHasTariffWriteAccess(user)) {
+    tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
+  }
+
+  const { id } = c.get("validatedParam");
+  const productId = Number.parseInt(id, 10);
+  const { clinicId: scopedClinicId } = getScope(user, c.req.query());
+
+  const validatedData = c.get("validatedJson") as UpdateProductData | undefined;
+  if (!validatedData) {
+    tariffError(
+      httpCodes.BAD_REQUEST,
+      "INVALID_REQUEST_BODY",
+      "Invalid request body"
+    );
+  }
+
+  // Check if product exists and user has access
+  const existingProduct = await db.product.findUnique({
+    where: { id: productId },
+    include: { clinics: { select: { id: true } } },
+  });
+
+  if (!existingProduct) {
+    tariffError(httpCodes.NOT_FOUND, "PRODUCT_NOT_FOUND", "Product not found");
+  }
+
+  if (!userCanAccessProduct(user, existingProduct)) {
+    tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
+  }
+
+  // Check if new code conflicts with existing products
+  if (
+    await isProductCodeConflicting(validatedData.code, existingProduct.code)
+  ) {
+    tariffError(
+      httpCodes.CONFLICT,
+      "PRODUCT_CODE_EXISTS",
+      "Product with this code already exists"
+    );
+  }
+
+  // Verify departments exist if provided (Department is global in backend schema)
+  const departmentIdsInput = validatedData.departmentIds;
+  if (departmentIdsInput && departmentIdsInput.length > 0) {
+    const ok = await departmentsExistByIds(departmentIdsInput);
+    if (!ok) {
+      tariffError(
+        httpCodes.NOT_FOUND,
+        "DEPARTMENT_NOT_FOUND",
+        "One or more departments not found"
+      );
+    }
+  }
+
+  const updatedProduct = await db.product.update({
+    where: { id: productId },
+    data: {
+      name: validatedData.name,
+      code: validatedData.code,
+      description: validatedData.description,
+      category: validatedData.category as ProductCategory,
+      basePrice: validatedData.basePrice,
+      eastAfricaPrice: validatedData.eastAfricaPrice,
+      africaPrice: validatedData.africaPrice,
+      restOfWorldPrice: validatedData.restOfWorldPrice,
+      unit: validatedData.unit,
+      normalRange: validatedData.normalRange,
+      isActive: validatedData.isActive,
+      consumables: validatedData.consumables
+        ? (validatedData.consumables as Prisma.InputJsonValue)
+        : undefined,
+      departments: validatedData.departmentIds
+        ? {
+            set: validatedData.departmentIds.map((departmentId) => ({
+              id: departmentId,
+            })),
+          }
+        : undefined,
+    },
+    include: {
+      departments: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+      clinics: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+      insurancePrices: {
+        select: {
+          id: true,
+          price: true,
+          priceWithCo: true,
+          priceType: true,
+          insurerItemCode: true,
+          insuranceCompany: {
+            select: {
+              id: true,
+              companyName: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // Keep clinic-specific tariff in sync for clients that still call /products/:id
+  await syncClinicSpecificPricingFromProductUpdate({
+    productId,
+    clinicId: scopedClinicId,
+    data: validatedData,
+  });
+
+  return jsonSuccess(c, {
+    status: httpCodes.OK,
+    message: "Product updated successfully",
+    data: updatedProduct,
+  });
+};
+
+export const updateProductPricing = async (
+  c: Context<AppEnv>
+): Promise<Response> => {
+  const user = c.get("user");
+  if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
+    tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
+  }
+
+  const { id } = c.get("validatedParam");
+  const productId = Number.parseInt(id, 10);
+  const { clinicId: scopedClinicId } = getScope(user, c.req.query());
+  const clinicId = scopedClinicId;
+
+  if (!clinicId) {
+    tariffError(
+      httpCodes.BAD_REQUEST,
+      "CLINIC_SCOPE_REQUIRED",
+      "Clinic scope is required to update product pricing"
+    );
+  }
+
+  const validatedData = c.get("validatedJson") as
+    | UpdateProductPricingData
+    | undefined;
+  if (!validatedData) {
+    tariffError(
+      httpCodes.BAD_REQUEST,
+      "INVALID_REQUEST_BODY",
+      "Invalid request body"
+    );
+  }
+
+  // Check if product exists and user has access
+  const existingProduct = await db.product.findUnique({
+    where: { id: productId },
+    include: {
+      clinics: {
+        select: { id: true },
+      },
+    },
+  });
+
+  if (!existingProduct) {
+    tariffError(httpCodes.NOT_FOUND, "PRODUCT_NOT_FOUND", "Product not found");
+  }
+
+  if (
+    user.role !== Role.SUPER_ADMIN &&
+    !existingProduct.clinics.some((clinic) => clinic.id === clinicId)
+  ) {
+    tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
+  }
+
+  const {
+    basePrice,
+    eastAfricaPrice,
+    africaPrice,
+    restOfWorldPrice,
+    insurancePrices,
+  } = validatedData;
+
+  let insuranceCompanyIds: number[] = [];
+
+  // Only replace insurance prices when payload explicitly includes them.
+  if (insurancePrices) {
+    insuranceCompanyIds = insurancePrices.map((ip) =>
+      Number.parseInt(ip.companyId, 10)
+    );
+    if (insuranceCompanyIds.some(Number.isNaN)) {
+      tariffError(
+        httpCodes.BAD_REQUEST,
+        "INSURANCE_COMPANY_ID_INVALID",
+        "One or more insurance company IDs are invalid"
       );
     }
 
-    // Verify departments exist if provided (Department is global in backend schema)
-    if (departmentIds && departmentIds.length > 0) {
-      const departments = await db.department.findMany({
-        where: { id: { in: departmentIds } },
-      });
-      if (departments.length !== departmentIds.length) {
-        return c.json(
-          { error: "One or more departments not found" },
-          httpCodes.NOT_FOUND as ContentfulStatusCode
-        );
-      }
-    }
+    // Verify insurance companies exist (no clinic relation in backend schema)
+    const insuranceCompanies = await db.insuranceCompany.findMany({
+      where: { id: { in: insuranceCompanyIds } },
+    });
 
-    const product = await db.product.create({
-      data: {
-        name,
-        code,
-        description,
-        category: category as ProductCategory,
+    if (insuranceCompanies.length !== insuranceCompanyIds.length) {
+      tariffError(
+        httpCodes.NOT_FOUND,
+        "INSURANCE_COMPANY_NOT_FOUND",
+        "One or more insurance companies not found"
+      );
+    }
+  }
+
+  await db.$transaction(async (tx) => {
+    // Update or create clinic-specific product prices.
+    await tx.clinicProductPrice.upsert({
+      where: {
+        clinicId_productId: {
+          clinicId,
+          productId,
+        },
+      },
+      update: {
         basePrice: basePrice ?? null,
         eastAfricaPrice: eastAfricaPrice ?? null,
         africaPrice: africaPrice ?? null,
         restOfWorldPrice: restOfWorldPrice ?? null,
-        unit,
-        normalRange,
-        icd11Code: icd11Code ?? null,
-        loincCode: loincCode ?? null,
-        nationalTariffCode: nationalTariffCode ?? null,
-        consumables: consumables
-          ? (consumables as Prisma.InputJsonValue)
-          : undefined,
-        clinics: {
-          connect: { id: user.clinicId },
-        },
-        departments: departmentIds
-          ? {
-              connect: departmentIds.map((id) => ({ id })),
-            }
-          : undefined,
       },
-      include: {
-        departments: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        clinics: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+      create: {
+        clinicId,
+        productId,
+        basePrice: basePrice ?? null,
+        eastAfricaPrice: eastAfricaPrice ?? null,
+        africaPrice: africaPrice ?? null,
+        restOfWorldPrice: restOfWorldPrice ?? null,
       },
     });
 
-    return c.json({
-      status: httpCodes.CREATED,
-      message: "Product created successfully",
-      data: product,
-    });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
-    );
-  }
-};
-
-export const updateProduct = async (c: Context) => {
-  try {
-    const user = c.get("user");
-    if (!userHasTariffWriteAccess(user)) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
-    }
-
-    const { id } = c.get("validatedParam");
-    const productId = Number.parseInt(id, 10);
-    const { clinicId: scopedClinicId } = getScope(user, c.req.query());
-
-    const validatedData = c.get("validatedJson") as
-      | UpdateProductData
-      | undefined;
-    if (!validatedData) {
-      return c.json(
-        { error: "Invalid request body" },
-        httpCodes.BAD_REQUEST as ContentfulStatusCode
-      );
-    }
-
-    // Check if product exists and user has access
-    const existingProduct = await db.product.findUnique({
-      where: { id: productId },
-      include: { clinics: { select: { id: true } } },
-    });
-
-    if (!existingProduct) {
-      return c.json(
-        { error: "Product not found" },
-        httpCodes.NOT_FOUND as ContentfulStatusCode
-      );
-    }
-
-    if (!userCanAccessProduct(user, existingProduct)) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
-    }
-
-    // Check if new code conflicts with existing products
-    if (
-      await isProductCodeConflicting(validatedData.code, existingProduct.code)
-    ) {
-      return c.json(
-        { error: "Product with this code already exists" },
-        httpCodes.CONFLICT as ContentfulStatusCode
-      );
-    }
-
-    // Verify departments exist if provided (Department is global in backend schema)
-    const departmentIdsInput = validatedData.departmentIds;
-    if (departmentIdsInput && departmentIdsInput.length > 0) {
-      const ok = await departmentsExistByIds(departmentIdsInput);
-      if (!ok) {
-        return c.json(
-          { error: "One or more departments not found" },
-          httpCodes.NOT_FOUND as ContentfulStatusCode
-        );
-      }
-    }
-
-    const updatedProduct = await db.product.update({
-      where: { id: productId },
-      data: {
-        ...validatedData,
-        category: validatedData.category as ProductCategory,
-        consumables: validatedData.consumables
-          ? (validatedData.consumables as Prisma.InputJsonValue)
-          : undefined,
-        departments: validatedData.departmentIds
-          ? {
-              set: validatedData.departmentIds.map((departmentId) => ({
-                id: departmentId,
-              })),
-            }
-          : undefined,
-      },
-      include: {
-        departments: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        clinics: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        insurancePrices: {
-          select: {
-            id: true,
-            price: true,
-            priceWithCo: true,
-            priceType: true,
-            insurerItemCode: true,
-            insuranceCompany: {
-              select: {
-                id: true,
-                companyName: true,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    // Keep clinic-specific tariff in sync for clients that still call /products/:id
-    await syncClinicSpecificPricingFromProductUpdate({
-      productId,
-      clinicId: scopedClinicId,
-      data: validatedData,
-    });
-
-    return c.json({
-      status: httpCodes.OK,
-      message: "Product updated successfully",
-      data: updatedProduct,
-    });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
-    );
-  }
-};
-
-export const updateProductPricing = async (c: Context) => {
-  try {
-    const user = c.get("user");
-    if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
-    }
-
-    const { id } = c.get("validatedParam");
-    const productId = Number.parseInt(id, 10);
-    const { clinicId: scopedClinicId } = getScope(user, c.req.query());
-    const clinicId = scopedClinicId;
-
-    if (!clinicId) {
-      return c.json(
-        { error: "Clinic scope is required to update product pricing" },
-        httpCodes.BAD_REQUEST as ContentfulStatusCode
-      );
-    }
-
-    const validatedData = c.get("validatedJson") as
-      | UpdateProductPricingData
-      | undefined;
-    if (!validatedData) {
-      return c.json(
-        { error: "Invalid request body" },
-        httpCodes.BAD_REQUEST as ContentfulStatusCode
-      );
-    }
-
-    // Check if product exists and user has access
-    const existingProduct = await db.product.findUnique({
-      where: { id: productId },
-      include: {
-        clinics: {
-          select: { id: true },
-        },
-      },
-    });
-
-    if (!existingProduct) {
-      return c.json(
-        { error: "Product not found" },
-        httpCodes.NOT_FOUND as ContentfulStatusCode
-      );
-    }
-
-    if (
-      user.role !== Role.SUPER_ADMIN &&
-      !existingProduct.clinics.some((clinic) => clinic.id === clinicId)
-    ) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
-    }
-
-    const {
-      basePrice,
-      eastAfricaPrice,
-      africaPrice,
-      restOfWorldPrice,
-      icd11Code,
-      loincCode,
-      nationalTariffCode,
-      insurancePrices,
-    } = validatedData;
-
-    let insuranceCompanyIds: number[] = [];
-
-    // Only replace insurance prices when payload explicitly includes them.
     if (insurancePrices) {
-      insuranceCompanyIds = insurancePrices.map((ip) =>
-        Number.parseInt(ip.companyId, 10)
-      );
-      if (insuranceCompanyIds.some(Number.isNaN)) {
-        return c.json(
-          { error: "One or more insurance company IDs are invalid" },
-          httpCodes.BAD_REQUEST as ContentfulStatusCode
-        );
-      }
-
-      // Verify insurance companies exist (no clinic relation in backend schema)
-      const insuranceCompanies = await db.insuranceCompany.findMany({
-        where: { id: { in: insuranceCompanyIds } },
+      // Delete existing insurance prices within the transaction to prevent races
+      await tx.insurancePrice.deleteMany({
+        where: {
+          productId,
+          clinicId,
+        },
       });
 
-      if (insuranceCompanies.length !== insuranceCompanyIds.length) {
-        return c.json(
-          { error: "One or more insurance companies not found" },
-          httpCodes.NOT_FOUND as ContentfulStatusCode
-        );
+      // Insert new clinic-specific insurance prices if provided
+      if (insurancePrices.length > 0) {
+        await tx.insurancePrice.createMany({
+          data: insurancePrices.map((ip, index) => ({
+            price: ip.price,
+            priceWithCo: ip.priceWithCo ?? undefined,
+            priceType: ip.priceType ?? PriceType.PRIVATE,
+            insurerItemCode: ip.insurerItemCode ?? undefined,
+            insuranceCompanyId: insuranceCompanyIds[index],
+            productId,
+            clinicId,
+          })),
+        });
       }
     }
+  });
 
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Transaction keeps related writes atomic after pre-validation.
-    await db.$transaction(async (tx) => {
-      // Standardized codes are global product attributes; persist on the Product
-      // itself only when at least one was provided in the payload.
-      if (
-        icd11Code !== undefined ||
-        loincCode !== undefined ||
-        nationalTariffCode !== undefined
-      ) {
-        await tx.product.update({
-          where: { id: productId },
-          data: {
-            ...(icd11Code !== undefined
-              ? { icd11Code: icd11Code || null }
-              : {}),
-            ...(loincCode !== undefined
-              ? { loincCode: loincCode || null }
-              : {}),
-            ...(nationalTariffCode !== undefined
-              ? { nationalTariffCode: nationalTariffCode || null }
-              : {}),
-          },
-        });
-      }
-
-      // Update or create clinic-specific product prices.
-      await tx.clinicProductPrice.upsert({
+  // Fetch updated product with clinic-specific pricing
+  const updatedProduct = await db.product.findUnique({
+    where: { id: productId },
+    include: {
+      departments: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+      clinics: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+      clinicProductPrices: {
         where: {
-          clinicId_productId: {
-            clinicId,
-            productId,
-          },
-        },
-        update: {
-          basePrice: basePrice ?? null,
-          eastAfricaPrice: eastAfricaPrice ?? null,
-          africaPrice: africaPrice ?? null,
-          restOfWorldPrice: restOfWorldPrice ?? null,
-        },
-        create: {
           clinicId,
-          productId,
-          basePrice: basePrice ?? null,
-          eastAfricaPrice: eastAfricaPrice ?? null,
-          africaPrice: africaPrice ?? null,
-          restOfWorldPrice: restOfWorldPrice ?? null,
         },
-      });
-
-      if (insurancePrices) {
-        // Delete existing insurance prices within the transaction to prevent races
-        await tx.insurancePrice.deleteMany({
-          where: {
-            productId,
-            clinicId,
-          },
-        });
-
-        // Insert new clinic-specific insurance prices if provided
-        if (insurancePrices.length > 0) {
-          await tx.insurancePrice.createMany({
-            data: insurancePrices.map((ip, index) => ({
-              price: ip.price,
-              priceWithCo: ip.priceWithCo ?? undefined,
-              priceType: ip.priceType ?? PriceType.PRIVATE,
-              insurerItemCode: ip.insurerItemCode ?? undefined,
-              insuranceCompanyId: insuranceCompanyIds[index],
-              productId,
-              clinicId,
-            })),
-          });
-        }
-      }
-    });
-
-    // Fetch updated product with clinic-specific pricing
-    const updatedProduct = await db.product.findUnique({
-      where: { id: productId },
-      include: {
-        departments: {
-          select: {
-            id: true,
-            name: true,
-          },
+        select: {
+          basePrice: true,
+          eastAfricaPrice: true,
+          africaPrice: true,
+          restOfWorldPrice: true,
         },
-        clinics: {
-          select: {
-            id: true,
-            name: true,
-          },
+      },
+      insurancePrices: {
+        where: {
+          clinicId,
         },
-        clinicProductPrices: {
-          where: {
-            clinicId,
-          },
-          select: {
-            basePrice: true,
-            eastAfricaPrice: true,
-            africaPrice: true,
-            restOfWorldPrice: true,
-          },
-        },
-        insurancePrices: {
-          where: {
-            clinicId,
-          },
-          select: {
-            id: true,
-            price: true,
-            priceWithCo: true,
-            priceType: true,
-            insurerItemCode: true,
-            insuranceCompany: {
-              select: {
-                id: true,
-                companyName: true,
-              },
+        select: {
+          id: true,
+          price: true,
+          priceWithCo: true,
+          priceType: true,
+          insurerItemCode: true,
+          insuranceCompany: {
+            select: {
+              id: true,
+              companyName: true,
             },
           },
         },
       },
-    });
+    },
+  });
 
-    return c.json({
-      status: httpCodes.OK,
-      message: "Product pricing updated successfully",
-      data: updatedProduct,
-    });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
-    );
-  }
+  return jsonSuccess(c, {
+    status: httpCodes.OK,
+    message: "Product pricing updated successfully",
+    data: updatedProduct,
+    meta: terminologyWarningMeta(
+      containsLegacyTerminologyFields(validatedData)
+    ),
+  });
 };
 
-export const getConsultationProducts = async (c: Context) => {
+export const getConsultationProducts = async (
+  c: Context<AppEnv>
+): Promise<Response> => {
   try {
     const user = c.get("user");
     if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
-      );
+      tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
     }
 
     const products = await db.product.findMany({
@@ -1243,20 +1241,26 @@ export const getConsultationProducts = async (c: Context) => {
     //biome-ignore lint/suspicious/noConsole: <>
     console.log({ productsWithPricing });
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: "Consultation products fetched successfully",
       data: productsWithPricing,
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
 
-export const getConsultationProductsWithPricing = async (c: Context) => {
+export const getConsultationProductsWithPricing = async (
+  c: Context<AppEnv>
+): Promise<Response> => {
   try {
     const user = c.get("user");
 
@@ -1347,20 +1351,26 @@ export const getConsultationProductsWithPricing = async (c: Context) => {
       };
     });
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: "Consultation products with pricing fetched successfully",
       data: productsWithPricing,
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
 
-export const getLabProductsWithPricing = async (c: Context) => {
+export const getLabProductsWithPricing = async (
+  c: Context<AppEnv>
+): Promise<Response> => {
   try {
     const user = c.get("user");
 
@@ -1431,26 +1441,41 @@ export const getLabProductsWithPricing = async (c: Context) => {
       };
     });
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: "Lab products with pricing fetched successfully",
       data: productsWithPricing,
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
 
-export const importProductsFromCSV = async (c: Context) => {
+export const importProductsFromCSV = async (
+  c: Context<AppEnv>
+): Promise<Response> => {
   try {
     const user = c.get("user");
     if (user.role !== Role.CLINIC_ADMIN && user.role !== Role.SUPER_ADMIN) {
-      return c.json(
-        { error: "Forbidden" },
-        httpCodes.FORBIDDEN as ContentfulStatusCode
+      tariffError(httpCodes.FORBIDDEN, "FORBIDDEN", "Forbidden");
+    }
+
+    // A SUPER_ADMIN carries no clinicId of their own, so the import has to run
+    // against the scope resolved from the request (`?clinicId=`). Reading
+    // `user.clinicId` here handed `undefined` to every product write below.
+    const { clinicId } = getScope(user, c.req.query());
+    if (!clinicId) {
+      tariffError(
+        httpCodes.BAD_REQUEST,
+        "CLINIC_SCOPE_REQUIRED",
+        "Clinic scope is required to import products"
       );
     }
 
@@ -1458,9 +1483,10 @@ export const importProductsFromCSV = async (c: Context) => {
       | ImportProductsData
       | undefined;
     if (!validatedData) {
-      return c.json(
-        { error: "Invalid request body" },
-        httpCodes.BAD_REQUEST as ContentfulStatusCode
+      tariffError(
+        httpCodes.BAD_REQUEST,
+        "INVALID_REQUEST_BODY",
+        "Invalid request body"
       );
     }
 
@@ -1476,9 +1502,10 @@ export const importProductsFromCSV = async (c: Context) => {
     });
 
     if (!records || records.length === 0) {
-      return c.json(
-        { error: "No valid records found in CSV" },
-        httpCodes.BAD_REQUEST as ContentfulStatusCode
+      tariffError(
+        httpCodes.BAD_REQUEST,
+        "CSV_RECORDS_REQUIRED",
+        "No valid records found in CSV"
       );
     }
 
@@ -1523,7 +1550,7 @@ export const importProductsFromCSV = async (c: Context) => {
             );
             const startTime = Date.now();
             const result = await processRecord(
-              user.clinicId,
+              clinicId,
               companyMap,
               existingProduct
             )(record);
@@ -1554,7 +1581,7 @@ export const importProductsFromCSV = async (c: Context) => {
       });
     }
 
-    return c.json({
+    return jsonSuccess(c, {
       status: httpCodes.OK,
       message: `Successfully imported ${successfulImports} products`,
       data: {
@@ -1563,10 +1590,14 @@ export const importProductsFromCSV = async (c: Context) => {
         errors: errors.slice(0, 10), // Limit errors to first 10
       },
     });
-  } catch (_error) {
-    return c.json(
-      { error: "Internal Server Error" },
-      httpCodes.INTERNAL_SERVER_ERROR as ContentfulStatusCode
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    tariffError(
+      httpCodes.INTERNAL_SERVER_ERROR,
+      "INTERNAL_SERVER_ERROR",
+      "Internal Server Error"
     );
   }
 };
